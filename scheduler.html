@@ -731,18 +731,17 @@ function computeSchedule(task){
   const progress = totalDet? Math.round(doneDet/totalDet*100) : 0;
   const allDone = totalDet>0 && doneDet===totalDet;
 
-  // 긴급도: 최소 시작일까지 남은 '영업일' (slack)
-  let slack = null, level='ok';
-  if(taskStart && !allDone){
-    slack = bizDelta(today0(), taskStart);
-    if(slack < 0) level='overdue';
-    else if(slack <= 3) level='urgent';
-    else if(slack <= 7) level='soon';
-    else level='ok';
-  } else if(allDone){
-    level='done';
+  // 긴급도 (생애주기): 시작 전이면 '최소 시작일까지', 시작 후면 '완료 기한까지'(영업일)
+  //   타겟 이전 → 시작 마감(최소 시작일) / 타겟 이후 → 완료 마감(taskEnd)
+  let slack=null, level='ok', mode=null;
+  if(allDone){ level='done'; }
+  else if(taskStart && taskEnd){
+    const ss=bizDelta(today0(), taskStart);   // 시작까지 남은 영업일
+    const fs=bizDelta(today0(), taskEnd);      // 완료 기한까지 남은 영업일
+    if(ss>=0){ mode='start'; slack=ss; level = ss<=3?'urgent':ss<=7?'soon':'ok'; }
+    else      { mode='finish'; slack=fs; level = fs<0?'overdue':fs<=3?'urgent':fs<=7?'soon':'ok'; }
   }
-  return { target, taskStart, taskEnd, totalDur, sumBefore, sumOn, sumAfter, stageInfo, progress, allDone, slack, level, totalDet, doneDet };
+  return { target, taskStart, taskEnd, totalDur, sumBefore, sumOn, sumAfter, stageInfo, progress, allDone, slack, level, mode, totalDet, doneDet };
 }
 
 const IMP = {4:{t:'긴급',c:'imp-4'},3:{t:'높음',c:'imp-3'},2:{t:'보통',c:'imp-2'},1:{t:'낮음',c:'imp-1'}};
@@ -802,7 +801,12 @@ function render(){
 function ddayText(sc){
   if(sc.allDone) return {big:'완료',sub:'',cls:'ok'};
   if(sc.slack==null) return {big:'-',sub:'타겟일 미정',cls:'ok'};
-  if(sc.slack<0) return {big:'지연 '+Math.abs(sc.slack)+'일',sub:'시작했어야 함',cls:'overdue'};
+  if(sc.mode==='finish'){   // 시작 시점 지남 → 완료 기한 기준
+    if(sc.slack<0)  return {big:'마감 지연 '+(-sc.slack)+'일',sub:'완료기한 초과',cls:'overdue'};
+    if(sc.slack===0)return {big:'마감 D-DAY',sub:'오늘 마감',cls:'urgent'};
+    return {big:'마감 D-'+sc.slack,sub:'마감까지(영업일)',cls:sc.level};
+  }
+  // 시작 전 → 최소 시작일 기준
   if(sc.slack===0) return {big:'D-DAY',sub:'오늘 시작',cls:'urgent'};
   return {big:'D-'+sc.slack,sub:'시작까지(영업일)',cls:sc.level};
 }
@@ -815,14 +819,16 @@ function cardHTML(t,sc){
 
   const PH = {
     on:   {tag:'📍 타겟 당일', cls:'on',     lbl:'예정',      flag:'당일 수행 · 핵심 마일스톤'},
-    after:{tag:'타겟 이후',    cls:'after',  lbl:'예정 시작', flag:''},
+    after:{tag:'타겟 이후',    cls:'after',  lbl:'마감',      flag:''},
     before:{tag:'🎯 타겟 이전',cls:'before', lbl:'최소 시작', flag:''}
   };
   const stageRow = (st,i,ord)=>{
     const info = sc.stageInfo[i]||{};
     const ph = PH[info.phase]||PH.before;
-    const startStr = info.start? fmtK(info.start):'-';
-    const alert = info.start && bizDelta(today0(),info.start)<0 && !sc.allDone ? 'alert':'';
+    // 타겟 이전·당일 → 시작일 기준 / 타겟 이후 → 완료(마감)일 기준
+    const dateRef = info.phase==='after' ? info.end : info.start;
+    const startStr = dateRef? fmtK(dateRef):'-';
+    const alert = dateRef && bizDelta(today0(),dateRef)<0 && !sc.allDone ? 'alert':'';
     const dArr = st.details||[];
     const sDone = dArr.length ? dArr.every(d=>d.done) : !!st.done;  // 하위 전부 체크 → 자동, 없으면 단계 자체 플래그
     const dets = dArr.map((d,j)=>`
@@ -861,7 +867,7 @@ function cardHTML(t,sc){
           <span class="ico"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="18" rx="3" stroke="currentColor" stroke-width="1.6"/><path d="M16 2v4M8 2v4M3 10h18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg> 타겟 <b>${fmt(sc.target)}</b></span>
           <span class="ico"><svg viewBox="0 0 24 24" fill="none"><path d="M12 6v6l4 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/></svg> 최소 시작 <b>${fmt(sc.taskStart)}</b></span>
           <span class="ico">총 <b>${sc.totalDur}영업일</b></span>
-          ${(sc.taskEnd && +sc.taskEnd>+sc.target)?`<span class="ico">🏁 완료예정 <b>${fmt(sc.taskEnd)}</b></span>`:''}
+          ${(sc.taskEnd && +sc.taskEnd>+sc.target)?`<span class="ico">🏁 완료기한 <b>${fmt(sc.taskEnd)}</b></span>`:''}
           ${t.owner?`<span class="ico"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.6"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg> ${esc(t.owner)}</span>`:''}
           ${t.note?`<span class="ico">📝 ${esc(t.note)}</span>`:''}
         </div>
@@ -896,7 +902,7 @@ function renderStats(){
   const avg = active.length? Math.round(active.reduce((a,s)=>a+s.progress,0)/active.length):0;
   document.getElementById('stats').innerHTML = `
     <div class="stat accent"><div class="num">${active.length}</div><div class="lbl">진행중 업무</div></div>
-    <div class="stat red"><div class="num">${overdue}</div><div class="lbl">시작 지연</div></div>
+    <div class="stat red"><div class="num">${overdue}</div><div class="lbl">지연</div></div>
     <div class="stat warn"><div class="num">${urgent}</div><div class="lbl">긴급 (D-3 이내)</div></div>
     <div class="stat ok"><div class="num">${done}</div><div class="lbl">완료</div></div>
     <div class="stat"><div class="num">${avg}%</div><div class="lbl">평균 진행률</div></div>`;
@@ -1024,7 +1030,7 @@ function renderStages(){
       <div class="se-head">
         <span class="se-ord">${i+1}</span>
         <input class="sname" type="text" placeholder="단계명 (예: 자료 수집)" value="${esc(st.name)}" oninput="onStage(${i},'name',this.value)">
-        <input class="sdur" type="number" min="0" placeholder="영업일" value="${st.dur===0?0:esc(st.dur)}" oninput="onStage(${i},'dur',this.value)">
+        <input class="sdur" type="number" min="0" placeholder="소요일수" value="${st.dur===0?0:esc(st.dur)}" oninput="onStage(${i},'dur',this.value)">
         <div class="se-tools">
           <button class="mv-btn" onclick="moveStage(${i},-1)" ${i===0?'disabled':''} title="위로 이동">▲</button>
           <button class="mv-btn" onclick="moveStage(${i},1)" ${i===n-1?'disabled':''} title="아래로 이동">▼</button>
@@ -1331,7 +1337,7 @@ function toast(msg){
    내보내기 — 표 형태(단계/세부업무 펼침)
    ============================================================ */
 function buildRows(){
-  const rows=[['업무명','중요도','담당자','분류','타겟완료일','완료예정일','최소시작일','총소요일','단계','시점','단계시작일','단계소요일','세부업무','완료여부','진행률','상태','비고']];
+  const rows=[['업무명','중요도','담당자','분류','타겟완료일','완료기한','최소시작일','총소요일','단계','시점','단계시작일','단계소요일','세부업무','완료여부','진행률','상태','비고']];
   tasks.forEach(t=>{
     const sc=computeSchedule(t);
     const impT=IMP[t.importance||2].t;
